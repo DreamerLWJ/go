@@ -19,8 +19,11 @@ const smallBufferSize = 64
 // The zero value for Buffer is an empty buffer ready to use.
 type Buffer struct {
 	buf      []byte // contents are the bytes buf[off : len(buf)]
+	//buf      []byte // buf[off : len(buf)] 包含实际存储的内容
 	off      int    // read at &buf[off], write at &buf[len(buf)]
+	//off      int    // &buf[off] 为读取起始位置，&buf[len(buf)] 为写入起始位置
 	lastRead readOp // last read operation, so that Unread* can work correctly.
+	//lastRead readOp // 指示上一个读取操作类型， TODO 暂未清楚实际作用
 }
 
 // The readOp constants describe the last action performed on
@@ -63,6 +66,7 @@ func (b *Buffer) AvailableBuffer() []byte { return b.buf[len(b.buf):] }
 // as a string. If the [Buffer] is a nil pointer, it returns "<nil>".
 //
 // To build strings more efficiently, see the [strings.Builder] type.
+// 字符串返回尚未被读取的内容的
 func (b *Buffer) String() string {
 	if b == nil {
 		// Special case, useful in debugging.
@@ -72,37 +76,43 @@ func (b *Buffer) String() string {
 }
 
 // empty reports whether the unread portion of the buffer is empty.
+// 指示当前 buffer 是否为空，当 off(读取起始位置) >= len(buf) 时为空
 func (b *Buffer) empty() bool { return len(b.buf) <= b.off }
 
 // Len returns the number of bytes of the unread portion of the buffer;
 // b.Len() == len(b.Bytes()).
+// 返回未被读取部分的长度，即写入起始位置与读取起始位置之间部分的字节长度
 func (b *Buffer) Len() int { return len(b.buf) - b.off }
 
 // Cap returns the capacity of the buffer's underlying byte slice, that is, the
 // total space allocated for the buffer's data.
+// 字节切片实际分配的字节长度
 func (b *Buffer) Cap() int { return cap(b.buf) }
 
 // Available returns how many bytes are unused in the buffer.
+// 分配的字节长度中尚未使用的空间
 func (b *Buffer) Available() int { return cap(b.buf) - len(b.buf) }
 
 // Truncate discards all but the first n unread bytes from the buffer
 // but continues to use the same allocated storage.
 // It panics if n is negative or greater than the length of the buffer.
+// 截断尚未被读取的 n 字节
 func (b *Buffer) Truncate(n int) {
 	if n == 0 {
-		b.Reset()
+		b.Reset() // 清空
 		return
 	}
 	b.lastRead = opInvalid
 	if n < 0 || n > b.Len() {
 		panic("bytes.Buffer: truncation out of range")
 	}
-	b.buf = b.buf[:b.off+n]
+	b.buf = b.buf[:b.off+n] // 仅保留读取起始位后 n 字节长度未读内容
 }
 
 // Reset resets the buffer to be empty,
 // but it retains the underlying storage for use by future writes.
 // Reset is the same as [Buffer.Truncate](0).
+// 清空，保留已分配的字节长度
 func (b *Buffer) Reset() {
 	b.buf = b.buf[:0]
 	b.off = 0
@@ -112,9 +122,10 @@ func (b *Buffer) Reset() {
 // tryGrowByReslice is an inlineable version of grow for the fast-case where the
 // internal buffer only needs to be resliced.
 // It returns the index where bytes should be written and whether it succeeded.
+// 通过「切片重组」来完成「扩容」
 func (b *Buffer) tryGrowByReslice(n int) (int, bool) {
-	if l := len(b.buf); n <= cap(b.buf)-l {
-		b.buf = b.buf[:l+n]
+	if l := len(b.buf); n <= cap(b.buf)-l { // 如果 b.Available() 满足所需的 n 字节长度
+		b.buf = b.buf[:l+n] // len = len + n
 		return l, true
 	}
 	return 0, false
@@ -123,17 +134,22 @@ func (b *Buffer) tryGrowByReslice(n int) (int, bool) {
 // grow grows the buffer to guarantee space for n more bytes.
 // It returns the index where bytes should be written.
 // If the buffer can't grow it will panic with ErrTooLarge.
+// 通过「扩容」保证空间满足 n 字节长度需求
+// 返回 n 字节长度写入的位置
 func (b *Buffer) grow(n int) int {
 	m := b.Len()
 	// If buffer is empty, reset to recover space.
+	// 如果为空，即写入起始位置与读取起始位置相同，则复用已分配的空间
 	if m == 0 && b.off != 0 {
 		b.Reset()
 	}
 	// Try to grow by means of a reslice.
+	// 通过「切片重组」来完成「扩容」
 	if i, ok := b.tryGrowByReslice(n); ok {
 		return i
 	}
 	if b.buf == nil && n <= smallBufferSize {
+		// 分配初始 cap
 		b.buf = make([]byte, n, smallBufferSize)
 		return 0
 	}
@@ -143,15 +159,18 @@ func (b *Buffer) grow(n int) int {
 		// slice. We only need m+n <= c to slide, but
 		// we instead let capacity get twice as large so we
 		// don't spend all our time copying.
+		// 当 m(未读长度) + n(写入的长度) <= c(已分配长度) 时，
+		// 我们只需要移动未读的部分即可，而无需继续扩容为两倍大小
 		copy(b.buf, b.buf[b.off:])
 	} else if c > maxInt-c-n {
 		panic(ErrTooLarge)
 	} else {
 		// Add b.off to account for b.buf[:b.off] being sliced off the front.
+		// 扩容切片
 		b.buf = growSlice(b.buf[b.off:], b.off+n)
 	}
 	// Restore b.off and len(b.buf).
-	b.off = 0
+	b.off = 0 // 实际扩容后将未读起始位置隐式复位
 	b.buf = b.buf[:m+n]
 	return m
 }
